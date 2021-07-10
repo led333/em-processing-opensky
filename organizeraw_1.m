@@ -1,17 +1,19 @@
 % Copyright 2018 - 2020, MIT Lincoln Laboratory
 % SPDX-License-Identifier: BSD-2-Clause
-function [Traw,nLines,nFilter] = organizeraw_1(dt,inHour, varargin)
+function [Traw,nLines,nFilter] = organizeraw_1(inFile,outID, varargin)
 
 %% Input parser
 p = inputParser;
 
 % Required
-addRequired(p,'dt',@isdatetime);
-addRequired(p,'inHour',@isnumeric);
+addRequired(p,'inFile');
+addRequired(p,'outID');
 
 % Optional
 addOptional(p,'inDir',[getenv('AEM_DIR_OPENSKY') filesep 'data']); % Input directory
-addOptional(p,'dirFile',[getenv('AEM_DIR_OPENSKY') filesep 'output' filesep sprintf('0_Tdir_%s.mat','2020-06-12')]); % Output from RUN_0_createdirectories_serial
+addOptional(p,'dirFile2018',[getenv('AEM_DIR_OPENSKY') filesep 'output' filesep '0_Tdir_terminalv2_2018_2020-12-04.mat']); % Output from RUN_0_createdirectories_serial
+addOptional(p,'dirFile2019',[getenv('AEM_DIR_OPENSKY') filesep 'output' filesep '0_Tdir_terminalv2_2019_2020-12-04.mat']); % Output from RUN_0_createdirectories_serial
+addOptional(p,'dirFile2020',[getenv('AEM_DIR_OPENSKY') filesep 'output' filesep '0_Tdir_terminalv2_2020_2020-12-04.mat']); % Output from RUN_0_createdirectories_serial
 
 % Optional - Boundary
 addOptional(p,'isFilterISO3166A2',true,@islogical);
@@ -19,50 +21,56 @@ addOptional(p,'iso_a2',{'US','CA','MX','AW','AG','BB','BS','BM','CU','CW','JM','
 addOptional(p,'bufwidth_deg',nm2deg(60));
 
 % Parse
-parse(p,dt,inHour,varargin{:});
+parse(p,inFile,outID,varargin{:});
 
 %% Get ready
-dstr = datestr(dt,'YYYY-mm-DD'); % Datestring
-inFile = [p.Results.inDir filesep dstr filesep 'states_' dstr '-' sprintf('%02.0f',inHour) '.csv'];
-nFilter = struct('missingpos',0,'iso3166a2',0);
+% dstr = datestr(dt,'YYYY-mm-DD'); % Datestring
+% inFile = [p.Results.inDir filesep dstr filesep 'states_' dstr '-' sprintf('%02.0f',inHour) '.csv'];
+% nFilter = struct('missingpos',0,'iso3166a2',0);
 
 %% Iterate through file and get raw data
-% Open File
-fid = fopen(inFile,'r');
+[colNames, colData, nLines] = loadOpenSkyCSV(p.Results.inFile);
 
 % Catch and return if inFile fails to loads
-if fid==-1
-    warning('organizeraw_1:inFile','%s failed to load, RETURN\n',inFile);
+if isempty(colNames)
     Traw = table(strings(0,1),strings(0,1),strings(0,1),strings(0,1),[],true(0,1),strings(0,1),strings(0,1),...
         'VariableNames',{'icao24','acType','acMfr','acModel','nReports','isAllAboveFL180','folderOrganize','fullPath'});
     return;
 end
 
-% Read first line (header)
-colNames = textscan(fid,'%s',1);
-
-% Read all lines
-colData = textscan(fid,'%f %s %f %f %f %f %f %s %s %s %s %s %f %f %f %f','Delimiter',',','HeaderLines',0);
-
-% Close file
-fclose(fid);
-
-% Determine the number of lines
-nLines = length(colData{1});
-
 % Display status
 fprintf('%s has %i lines\n',inFile,nLines);
 
 %% Parse cells from colData and create individual column arrays
-% Parse column names
-colNames = matlab.lang.makeValidName(string(strsplit(colNames{1}{1},',')));
-
 for i=1:1:numel(colNames)
     eval(sprintf('%s=colData{%i};',colNames{i},i));
 end
 
 % Clear for memory
 clear colData
+
+%% Select output from RUN_0_* based on year
+% This is hardcoded too much and needs to change
+% Convert to datetime
+d = datetime(time, 'ConvertFrom', 'posixtime','TimeZone','UTC');
+
+% Parse year
+if numel(unique(d.Year)) == 1
+    inYear = d(1).Year;
+else
+    inYear = d(1).Year;
+    warning('Not all rows have the same year');
+end
+
+% Select dirFile based on year
+switch inYear
+    case 2018
+        dirFile = p.Results.dirFile2018;
+    case 2019
+        dirFile = p.Results.dirFile2019;
+    case 2020
+        dirFile = p.Results.dirFile2020;
+end
 
 %% Convert logicals
 onground = strcmpi(onground,'true');
@@ -118,8 +126,8 @@ geoaltitude_ft = geoaltitude * unitsratio('ft','m');
 clear velocity vertrate baroaltitude geoaltitude
 
 %% Load Processed FAA Aircraft Registry
-load(p.Results.dirFile,'Tdir','outDirParent','dirLimit');
-fprintf('Loaded: %s\n',p.Results.dirFile);
+load(dirFile,'Tdir','outDirParent','dirLimit');
+fprintf('Loaded: %s\n',dirFile);
 
 % Parse out variables for speed
 modeSHex = upper(Tdir.icao24);
@@ -127,7 +135,7 @@ acType = Tdir.acType;
 acMfr = Tdir.acMfr;
 acModel = Tdir.acModel;
 folderOrganize = Tdir.folderOrganize;
-outDirUnknown = [outDirParent filesep 'Unknown' filesep dstr '-' sprintf('%02.0f',inHour)];
+outDirUnknown = [outDirParent filesep 'Unknown' filesep outID];
 
 %% Aircraft Type and Number of Reports
 % Convert iaco24 and squawk
@@ -142,10 +150,26 @@ u24 = upper(u24);
 Traw = table(u24,repmat("Unknown",size(u24)),strings(size(u24)),strings(size(u24)),accumarray(ic,1),true(size(u24)),strings(size(u24)),strings(size(u24)),...
     'VariableNames',{'icao24','acType','acMfr','acModel','nReports','isAllAboveFL180','folderOrganize','fullPath'});
 
+%% Aircraft Type and Number of Reports
+% Convert iaco24 and squawk
+icao24 = upper(string(icao24));
+squawk = str2double(string(squawk));
+
+% Unique ICAO24 addresses
+[u24,ia,ic] = unique(icao24,'stable');
+
+% Create table
+Traw = table(u24,repmat("Unknown",size(u24)),strings(size(u24)),strings(size(u24)),accumarray(ic,1),true(size(u24)),strings(size(u24)),strings(size(u24)),...
+    'VariableNames',{'icao24','acType','acMfr','acModel','nReports','isAllAboveFL180','folderOrganize','fullPath'});
+
 % Determine aircraft type
-for i=i:1:numel(u24)
-    idx = find(contains(modeSHex,u24(i)));
-    if ~isempty(idx)
+for i=1:1:numel(u24)
+    % Calculate logical index
+    l24 = contains(modeSHex,u24(i),'IgnoreCase',true);
+    
+    % Do something if ith icao24 bit address is found in the aircraft registry
+    if any(l24)
+        idx = find(l24);
         Traw.acType(i) = acType(idx);
         Traw.acMfr(i) = acMfr(idx);
         Traw.acModel(i) = acModel(idx);
@@ -161,7 +185,6 @@ uType = unique(Traw.acType);
 
 % Display status
 fprintf('Identified %i unique aircraft types\n',numel(uType));
-
 %% Create subdirectories for unknown aircraft type
 % Most of these directories should already exist,
 % but we still do the ~exist / mkdir combo to make sure
@@ -206,7 +229,7 @@ fprintf('Created directories for unknown aircraft types\n');
 %% Iterate over unique icao 24 addresses
 for i=1:1:size(Traw,1)
     % Create output filename based on date
-    outFile = [dstr '_' sprintf('%02.0f',inHour) '_' Traw.icao24{i} '.csv'];
+    outFile = [outID '_' Traw.icao24{i} '.csv'];
     outFileFull = [Traw.folderOrganize{i} filesep outFile];
     
     % Logical index for records with specific icao24 address
